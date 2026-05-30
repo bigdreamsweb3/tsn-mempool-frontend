@@ -1,23 +1,26 @@
 {
-  "name": "tsn-mempool-explorer",
+  "name": "tsn-mempool-frontend",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3002",
     "build": "next build",
-    "start": "next start"
+    "start": "next start -p 3002",
+    "typecheck": "tsc --noEmit",
+    "git:quick:push": "git diff-index --quiet HEAD || (git add . && git commit -m \"Something just got updated!\" --allow-empty && git push origin main)",
+    "git:force:push": "git add . && git commit -m \"Something just got updated!\" --no-verify --allow-empty && git push origin main --force"
   },
   "dependencies": {
-    "lucide-react": "^1.16.0",
-    "next": "^16.2.6",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
+    "lucide-react": "^0.473.0",
+    "next": "14.2.26",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.0",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "typescript": "^6.0.3"
+    "@types/node": "^20.19.41",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.4.5"
   }
 }

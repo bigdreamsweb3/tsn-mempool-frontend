@@ -1,442 +1,515 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Box, CheckCircle2, FileText, Radio, RefreshCw,
-         Zap, AlertCircle, Hash, Cpu } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  ArrowRight,
+  Box,
+  CheckCircle2,
+  Clock3,
+  Cpu,
+  FileText,
+  Hash,
+  Layers3,
+  RefreshCw,
+  Wallet,
+  Zap,
+} from 'lucide-react';
 
 type Intent = {
-  id: string; paymentId: string; amount: number;
-  tokenMintAddress: string; status: string;
-  recipientHash: string; postedAt: string; updatedAt: string;
+  id: string;
+  paymentId: string;
+  amount: number;
+  tokenMintAddress: string;
+  status: string;
+  recipientHash: string;
+  postedAt: string;
+  updatedAt: string;
 };
+
 type Claim = {
-  id: string; intentId: string; paymentId: string;
-  destinationWallet: string; status: string; postedAt: string;
+  id: string;
+  intentId: string;
+  paymentId: string;
+  destinationWallet: string | null;
+  destinationRoute?: 'private' | string;
+  status: string;
+  postedAt: string;
 };
+
 type Proof = {
-  intent_id: string; cranker_pubkey: string;
-  proof_tx: string; timestamp: string; encrypted_payload?: string;
+  intent_id: string;
+  cranker_pubkey: string | null;
+  crankerRoute?: 'private' | string;
+  proof_tx: string;
+  timestamp: string;
+  encrypted_payload?: string;
 };
+
 type WorkItem = { intent: Intent; claimRequest: Claim };
+
 type Epoch = {
-  epoch_number: number; epoch_started_at: string;
-  next_close_at: string; intent_count: number;
-  claim_count: number; proof_count: number;
+  epoch_number: number;
+  epoch_started_at: string;
+  next_close_at: string;
+  intent_count: number;
+  claim_count: number;
+  proof_count: number;
 };
+
 type MempoolData = {
-  epoch: Epoch | null; intents: Intent[]; claims: Claim[];
-  proofs: Proof[]; work: WorkItem[]; fetched_at: string;
+  epoch: Epoch | null;
+  intents: Intent[];
+  claims: Claim[];
+  proofs: Proof[];
+  work: WorkItem[];
+  fetched_at: string;
+  metrics: {
+    intent_to_claim: {
+      sample_count: number;
+      average_ms: number;
+      min_ms: number;
+      max_ms: number;
+      last_ms: number;
+      updated_at?: string;
+    };
+    uptime: {
+      service_started_at: string;
+      uptime_seconds: number;
+      uptime_days: number;
+      downtime_events: number;
+    };
+    active_crankers_last_epoch: number;
+  } | null;
+  network: {
+    online_crankers_last_epoch: number;
+    total_crankers_seen: number;
+    total_vault_liquidity_usd?: number;
+    total_vault_liquidity: number;
+    tokens: Array<{
+      token_mint: string;
+      token_symbol?: string | null;
+      token_name?: string | null;
+      unit_price_usd?: number | null;
+      vault_token_account?: string | null;
+      cranker_vault?: string | null;
+      total_vault_liquidity_units?: number;
+      total_vault_liquidity_usd?: number;
+      total_vault_liquidity: number;
+      total_intent_amount: number;
+      pending_intent_amount: number;
+      executed_intent_amount: number;
+      vault_liquidity_estimate: number;
+      liquidity_source?: string | null;
+    }>;
+  } | null;
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  pending: '#fbbf24', claimed: '#2563EB', executed: '#00ff87',
-  settled: '#00ff87', expired: '#6b7280', failed: '#ef4444',
-  canceled: '#6b7280', reverted: '#ef4444',
-  processing: '#22d3ee', completed: '#00ff87',
-};
-const STATUS_GLOW: Record<string, string> = {
-  pending:   '0 0 6px rgba(251,191,36,0.6)',
-  claimed:   '0 0 6px rgba(37,99,235,0.6)',
-  executed:  '0 0 6px rgba(0,255,135,0.6)',
-  settled:   '0 0 6px rgba(0,255,135,0.6)',
-  failed:    '0 0 6px rgba(239,68,68,0.6)',
-  completed: '0 0 6px rgba(0,255,135,0.6)',
+  pending: '#fbbf24',
+  claimed: '#2563eb',
+  processing: '#22d3ee',
+  executed: '#00ff87',
+  settled: '#00ff87',
+  completed: '#00ff87',
+  expired: '#6b7280',
+  canceled: '#6b7280',
+  failed: '#ef4444',
+  reverted: '#ef4444',
 };
 
-function truncate(s: string, n = 12) {
-  if (!s) return '';
-  if (s.length <= n) return s;
-  return `${s.slice(0, 6)}...${s.slice(-4)}`;
+const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
+function truncate(value: string, size = 14) {
+  if (!value) return '--';
+  if (value.length <= size) return value;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
-function timeAgo(iso: string): string {
-  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
+
+function tokenAlias(mint: string) {
+  const aliases: Record<string, string> = {
+    [DEVNET_USDC_MINT]: 'USDC',
+  };
+  return aliases[mint] ?? truncate(mint, 14);
 }
-function formatCountdown(targetIso: string): string {
-  const diff = Math.max(0, Math.floor(
-    (new Date(targetIso).getTime() - Date.now()) / 1000
-  ));
+
+function formatAmount(value: number) {
+  if (!Number.isFinite(value)) return '0.0000';
+  return value.toLocaleString(undefined, { maximumFractionDigits: 4, minimumFractionDigits: 4 });
+}
+
+function formatUsd(value: number) {
+  if (!Number.isFinite(value)) return '$0.00';
+  return value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value >= 100 ? 0 : 2, minimumFractionDigits: 2 });
+}
+
+function formatSecondsFromMs(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return '--';
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function formatCountdown(targetIso: string, now: number) {
+  const diff = Math.max(0, Math.floor((new Date(targetIso).getTime() - now) / 1000));
   const h = Math.floor(diff / 3600);
   const m = Math.floor((diff % 3600) / 60);
   const s = diff % 60;
-  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
-function epochProgress(epoch: Epoch): number {
+
+function timeAgo(iso: string, now: number | null) {
+  if (!now) return '--';
+  const diff = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 1000));
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function epochProgress(epoch: Epoch | null, now: number | null) {
+  if (!epoch || !now) return 0;
   const start = new Date(epoch.epoch_started_at).getTime();
-  const end   = new Date(epoch.next_close_at).getTime();
-  return Math.min(100, Math.max(0, ((Date.now() - start) / (end - start)) * 100));
+  const end = new Date(epoch.next_close_at).getTime();
+  if (end <= start) return 0;
+  return Math.min(100, Math.max(0, ((now - start) / (end - start)) * 100));
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] || '#6b7280';
-  const glow  = STATUS_GLOW[status]  || 'none';
+  const color = STATUS_COLORS[status] ?? '#6b7280';
   return (
-    <span style={{ display:'inline-flex', alignItems:'center', gap:5,
-      color, fontSize:11, fontWeight:600, letterSpacing:'0.08em',
-      textTransform:'uppercase' }}>
-      <span style={{ width:7, height:7, borderRadius:'50%',
-        background:color, boxShadow:glow, display:'inline-block' }}
-        className={status === 'pending' ? 'pulse-dot' : ''} />
+    <span className="status-badge" style={{ ['--status-color' as string]: color }}>
+      <span className="status-dot" />
       {status}
     </span>
   );
 }
 
-function IntentRow({ intent, isNew }: { intent: Intent; isNew: boolean }) {
+function DataRow({
+  title,
+  subtitle,
+  status,
+  icon,
+  isNew,
+}: {
+  title: string;
+  subtitle: string;
+  status?: string;
+  icon: React.ReactNode;
+  isNew: boolean;
+}) {
   return (
-    <div className={isNew ? 'slide-in' : ''} style={{
-      borderBottom:'1px solid #111', padding:'10px 14px',
-      display:'grid', gridTemplateColumns:'1fr auto', gap:8,
-      transition:'background 0.2s' }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='#0d0d0d'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; }}>
-      <div>
-        <div style={{ color:'#e8e8e8', fontSize:12, fontWeight:600, marginBottom:3 }}>
-          <Hash size={10} style={{ display:'inline', marginRight:4, color:'#F97316' }} />
-          {truncate(intent.id, 20)}
-        </div>
-        <div style={{ color:'#555', fontSize:11 }}>
-          {intent.amount} <span style={{ color:'#666' }}>tokens</span>
-          {' '}<span style={{ color:'#333' }}>|</span>{' '}
-          {timeAgo(intent.postedAt)}
+    <div className={`data-row ${isNew ? 'slide-in' : ''}`}>
+      <div className="row-main">
+        <span className="row-icon">{icon}</span>
+        <div className="row-copy">
+          <div className="row-title">{title}</div>
+          <div className="row-subtitle">{subtitle}</div>
         </div>
       </div>
-      <StatusBadge status={intent.status} />
+      {status ? <StatusBadge status={status} /> : null}
     </div>
   );
 }
 
-function ClaimRow({ claim, isNew }: { claim: Claim; isNew: boolean }) {
+function Panel({ title, subtitle, count, children }: { title: string; subtitle: string; count: number; children: React.ReactNode }) {
   return (
-    <div className={isNew ? 'slide-in' : ''} style={{
-      borderBottom:'1px solid #111', padding:'10px 14px',
-      display:'grid', gridTemplateColumns:'1fr auto', gap:8 }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='#0d0d0d'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; }}>
-      <div>
-        <div style={{ color:'#e8e8e8', fontSize:12, fontWeight:600, marginBottom:3 }}>
-          <FileText size={10} style={{ display:'inline', marginRight:4, color:'#2563EB' }} />
-          {truncate(claim.id, 20)}
+    <section className="ledger-panel">
+      <div className="panel-head">
+        <div>
+          <div className="panel-title">{title}</div>
+          <div className="panel-subtitle">{subtitle}</div>
         </div>
-        <div style={{ color:'#555', fontSize:11 }}>
-          <span style={{ color:'#444' }}>-{'>'}</span>{' '}
-          {truncate(claim.destinationWallet, 18)}
-          {' '}<span style={{ color:'#333' }}>|</span>{' '}
-          {timeAgo(claim.postedAt)}
-        </div>
+        <span className="panel-count">{count}</span>
       </div>
-      <StatusBadge status={claim.status} />
-    </div>
-  );
-}
-
-function ProofRow({ proof, isNew }: { proof: Proof; isNew: boolean }) {
-  return (
-    <div className={isNew ? 'slide-in' : ''} style={{
-      borderBottom:'1px solid #111', padding:'10px 14px' }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='#0d0d0d'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; }}>
-      <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:4 }}>
-        <CheckCircle2 size={11} style={{ color:'#00ff87', flexShrink:0 }} />
-        <span style={{ color:'#e8e8e8', fontSize:12, fontWeight:600 }}>
-          {truncate(proof.cranker_pubkey, 20)}
-        </span>
-      </div>
-      <div style={{ color:'#555', fontSize:11 }}>
-        tx: {truncate(proof.proof_tx, 22)}
-        {' '}<span style={{ color:'#333' }}>|</span>{' '}
-        {timeAgo(proof.timestamp)}
-      </div>
-    </div>
-  );
-}
-
-function WorkRow({ item, isNew }: { item: WorkItem; isNew: boolean }) {
-  return (
-    <div className={isNew ? 'slide-in' : ''} style={{
-      borderBottom:'1px solid #111', padding:'10px 16px',
-      display:'grid', gridTemplateColumns:'1fr 1fr auto',
-      gap:12, alignItems:'center' }}
-      onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.background='#0d0d0d'; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background='transparent'; }}>
-      <div>
-        <div style={{ color:'#F97316', fontSize:11, marginBottom:2 }}>INTENT</div>
-        <div style={{ color:'#e8e8e8', fontSize:12, fontWeight:600 }}>
-          {truncate(item.intent.id, 18)}
-        </div>
-        <div style={{ color:'#555', fontSize:11 }}>{item.intent.amount} tokens</div>
-      </div>
-      <div>
-        <div style={{ color:'#2563EB', fontSize:11, marginBottom:2 }}>CLAIM</div>
-        <div style={{ color:'#e8e8e8', fontSize:12, fontWeight:600 }}>
-          {truncate(item.claimRequest.id, 18)}
-        </div>
-        <div style={{ color:'#555', fontSize:11 }}>
-          {truncate(item.claimRequest.destinationWallet, 18)}
-        </div>
-      </div>
-      <div style={{ padding:'4px 10px', border:'1px solid #F97316',
-        color:'#F97316', fontSize:11, letterSpacing:'0.08em',
-        boxShadow:'0 0 6px rgba(249,115,22,0.2)' }}>AVAILABLE</div>
-    </div>
+      <div className="panel-body">{children}</div>
+    </section>
   );
 }
 
 export default function MempoolExplorer() {
-  const [data, setData]           = useState<MempoolData | null>(null);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState<string | null>(null);
-  const [countdown, setCountdown] = useState('');
-  const [progress, setProgress]   = useState(0);
+  const [data, setData] = useState<MempoolData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [now, setNow] = useState<number | null>(null);
   const prevIds = useRef<Set<string>>(new Set());
-  const newIds  = useRef<Set<string>>(new Set());
+  const newIds = useRef<Set<string>>(new Set());
 
   const fetchData = useCallback(async () => {
     try {
       const res = await fetch('/api/mempool', { cache: 'no-store' });
-      if (!res.ok) throw new Error('fetch failed');
+      if (!res.ok) throw new Error('mempool fetch failed');
       const json: MempoolData = await res.json();
       const allIds = [
-        ...json.intents.map(i => i.id),
-        ...json.claims.map(c => c.id),
-        ...json.proofs.map(p => p.intent_id + '_proof'),
-        ...json.work.map(w => w.intent.id + '_work'),
+        ...json.intents.map((intent) => intent.id),
+        ...json.claims.map((claim) => claim.id),
+        ...json.proofs.map((proof) => `${proof.intent_id}:proof`),
+        ...json.work.map((work) => `${work.intent.id}:work`),
       ];
-      newIds.current  = new Set(allIds.filter(id => !prevIds.current.has(id)));
+      newIds.current = new Set(allIds.filter((id) => !prevIds.current.has(id)));
       prevIds.current = new Set(allIds);
-      setData(json); setError(null);
-    } catch { setError('connection lost'); }
-    finally  { setLoading(false); }
+      setData(json);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'mempool offline');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const t = setInterval(fetchData, 4000);
-    return () => clearInterval(t);
+    setNow(Date.now());
+    void fetchData();
+    const poll = window.setInterval(() => void fetchData(), 4000);
+    const clock = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => {
+      window.clearInterval(poll);
+      window.clearInterval(clock);
+    };
   }, [fetchData]);
 
-  useEffect(() => {
-    const t = setInterval(() => {
-      if (data?.epoch) {
-        setCountdown(formatCountdown(data.epoch.next_close_at));
-        setProgress(epochProgress(data.epoch));
-      }
-    }, 1000);
-    return () => clearInterval(t);
-  }, [data?.epoch]);
-
-  useEffect(() => {
-    if (data?.epoch) {
-      setCountdown(formatCountdown(data.epoch.next_close_at));
-      setProgress(epochProgress(data.epoch));
-    }
-  }, [data?.epoch]);
-
-  const col: React.CSSProperties = {
-    background:'#050505', border:'1px solid #1a1a1a',
-    display:'flex', flexDirection:'column',
-    overflow:'hidden', position:'relative', zIndex:1,
-  };
-  const colHeader: React.CSSProperties = {
-    padding:'10px 14px', borderBottom:'1px solid #1a1a1a',
-    display:'flex', alignItems:'center',
-    justifyContent:'space-between', background:'#080808',
-  };
-  const colTitle: React.CSSProperties  = { fontSize:11, fontWeight:700, letterSpacing:'0.15em', color:'#444', textTransform:'uppercase' };
-  const colCount: React.CSSProperties  = { fontSize:11, color:'#F97316', fontWeight:600 };
-  const colBody: React.CSSProperties   = { flex:1, overflowY:'auto', maxHeight:340 };
-  const emptyState: React.CSSProperties = { padding:'32px 16px', textAlign:'center', color:'#2a2a2a', fontSize:12 };
+  const progress = epochProgress(data?.epoch ?? null, now);
+  const countdown = data?.epoch && now ? formatCountdown(data.epoch.next_close_at, now) : '--:--:--';
+  const activeLiquidityUsd = data?.network?.total_vault_liquidity_usd ?? data?.network?.total_vault_liquidity ?? 0;
 
   return (
-    <div style={{ minHeight:'100vh', background:'#000', position:'relative', zIndex:1 }}>
-
-      {/* Header */}
-      <div style={{
-        borderBottom:'1px solid #1a1a1a', padding:'0 24px',
-        display:'flex', alignItems:'center', justifyContent:'space-between',
-        height:56, background:'#050505', position:'sticky', top:0, zIndex:100 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:16 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-            <Cpu size={18} style={{ color:'#F97316' }} />
-            <span style={{ color:'#e8e8e8', fontSize:14, fontWeight:700, letterSpacing:'0.05em' }}>TSN MEMPOOL</span>
-            <span style={{ color:'#333', fontSize:14 }}>/</span>
-            <span style={{ color:'#555', fontSize:13 }}>EXPLORER</span>
-          </div>
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <span className="pulse-dot" style={{ width:7, height:7, borderRadius:'50%',
-              background:'#00ff87', boxShadow:'0 0 6px rgba(0,255,135,0.8)',
-              display:'inline-block' }} />
-            <span style={{ color:'#00ff87', fontSize:11, letterSpacing:'0.1em' }}>LIVE</span>
+    <main className="mempool-shell">
+      <div className="scan-grid" />
+      <header className="topbar">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Cpu size={20} /></div>
+          <div>
+            <div className="brand-title">TSN Mempool Explorer</div>
+            <div className="brand-subtitle">private settlement queue for TrustLink Pay</div>
           </div>
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:24 }}>
-          {data?.epoch && (
-            <>
-              <div style={{ textAlign:'right' }}>
-                <div style={{ color:'#444', fontSize:10, letterSpacing:'0.1em', marginBottom:2 }}>
-                  EPOCH #{data.epoch.epoch_number}
-                </div>
-                <div style={{ color:'#e8e8e8', fontSize:14, fontWeight:700, letterSpacing:'0.08em' }}>
-                  {countdown || '--:--:--'}
-                </div>
-              </div>
-              <div style={{ color:'#333', fontSize:18 }}>|</div>
-            </>
-          )}
-          {error
-            ? <AlertCircle size={16} style={{ color:'#ef4444' }} />
-            : <RefreshCw size={14} style={{ color:'#2a2a2a',
-                animation: loading ? 'spin 1s linear infinite' : 'none' }} />}
+        <div className="live-strip">
+          <span className={`live-dot ${error ? 'danger' : ''}`} />
+          <span>{error ? 'backend disconnected' : 'live firebase mempool'}</span>
+          <button className="refresh-button" type="button" onClick={() => void fetchData()}>
+            <RefreshCw size={14} className={loading ? 'spin' : ''} />
+            refresh
+          </button>
         </div>
-      </div>
+      </header>
 
-      {/* Epoch progress bar */}
-      {data?.epoch && (
-        <div style={{ background:'#080808', borderBottom:'1px solid #111',
-          padding:'8px 24px', position:'relative', zIndex:1 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-            <span style={{ color:'#333', fontSize:10, letterSpacing:'0.1em' }}>EPOCH PROGRESS</span>
-            <span style={{ color:'#444', fontSize:10 }}>{progress.toFixed(1)}%</span>
-          </div>
-          <div style={{ height:3, background:'#111', overflow:'hidden' }}>
-            <div style={{
-              height:'100%', width:`${progress}%`,
-              background: progress > 80
-                ? 'linear-gradient(90deg, #2563EB, #ef4444)'
-                : 'linear-gradient(90deg, #2563EB, #F97316)',
-              boxShadow:'0 0 8px rgba(249,115,22,0.5)',
-              transition:'width 0.5s ease' }} />
-          </div>
-        </div>
-      )}
-
-      {/* Stats bar */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)',
-        borderBottom:'1px solid #111', background:'#030303',
-        position:'relative', zIndex:1 }}>
-        {[
-          { label:'INTENTS',      val:data?.intents.length??0, icon:<Box size={14}/>,         color:'#F97316' },
-          { label:'CLAIMS',       val:data?.claims.length??0,  icon:<FileText size={14}/>,     color:'#2563EB' },
-          { label:'PROOFS',       val:data?.proofs.length??0,  icon:<CheckCircle2 size={14}/>, color:'#00ff87' },
-          { label:'WORK PENDING', val:data?.work.length??0,    icon:<Zap size={14}/>,          color:'#fbbf24' },
-        ].map((stat, i) => (
-          <div key={stat.label} style={{ padding:'16px 20px',
-            borderRight: i < 3 ? '1px solid #111' : 'none',
-            display:'flex', alignItems:'center', gap:12 }}>
-            <span style={{ color:stat.color, opacity:0.7 }}>{stat.icon}</span>
+      <section className="hero-grid">
+        <div className="hero-card primary-card">
+          <div className="hero-row compact">
             <div>
-              <div style={{ color:stat.color, fontSize:22, fontWeight:700,
-                lineHeight:1, letterSpacing:'-0.02em' }}>
-                {String(stat.val).padStart(2,'0')}
+              <div className="eyebrow">settlement epoch</div>
+              <h1>Epoch #{data?.epoch?.epoch_number ?? '--'}</h1>
+              <p>Live TSN work board for intents, claims, cranker execution, and proof submission.</p>
+            </div>
+            <div className="epoch-stack">
+              <div className="countdown-card">
+                <div className="flex flex-nowrap items-center gap-2 md:justify-end">
+                  <Clock3 size={18} />
+                  <span>{countdown}</span>
+                </div>
+                <small>next close</small>
               </div>
-              <div style={{ color:'#333', fontSize:10, letterSpacing:'0.12em', marginTop:4 }}>
-                {stat.label}
+              <div className="progress-shell compact">
+                <div className="progress-meta">
+                  <span>epoch progress</span>
+                  <strong>{progress.toFixed(1)}%</strong>
+                </div>
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${progress}%` }} />
+                </div>
               </div>
             </div>
           </div>
-        ))}
-      </div>
-
-      {/* Three-column live feed */}
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr',
-        gap:1, background:'#111', borderBottom:'1px solid #111',
-        position:'relative', zIndex:1 }}>
-
-        <div style={col}>
-          <div style={colHeader}>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <Box size={12} style={{ color:'#F97316' }}/>
-              <span style={colTitle}>Payment Intents</span>
+          <div className="flow-strip">
+            <div className="flow-step">
+              <Box size={15} />
+              <span>Intent</span>
             </div>
-            <span style={colCount}>{data?.intents.length??0}</span>
+            <ArrowRight size={15} />
+            <div className="flow-step">
+              <FileText size={15} />
+              <span>Claim</span>
+            </div>
+            <ArrowRight size={15} />
+            <div className="flow-step">
+              <Zap size={15} />
+              <span>Crank</span>
+            </div>
+            <ArrowRight size={15} />
+            <div className="flow-step">
+              <CheckCircle2 size={15} />
+              <span>Proof</span>
+            </div>
           </div>
-          <div style={colBody}>
-            {!data?.intents.length
-              ? <div style={emptyState}>no intents in mempool</div>
-              : data.intents.map(i =>
-                  <IntentRow key={i.id} intent={i} isNew={newIds.current.has(i.id)} />
-                )}
+          <div className="hero-signal-grid">
+            <div>
+              <span>Open Intents</span>
+              <strong>{data?.intents.filter((intent) => !['executed', 'settled', 'completed'].includes(intent.status)).length ?? 0}</strong>
+            </div>
+            <div>
+              <span>Claim Requests</span>
+              <strong>{data?.claims.length ?? 0}</strong>
+            </div>
+            <div>
+              <span>Proofs</span>
+              <strong>{data?.proofs.length ?? 0}</strong>
+            </div>
+            <div>
+              <span>Avg Intent to Claim</span>
+              <strong>{formatSecondsFromMs(data?.metrics?.intent_to_claim.average_ms ?? 0)}</strong>
+            </div>
           </div>
         </div>
 
-        <div style={{ ...col, borderLeft:'none', borderRight:'none' }}>
-          <div style={colHeader}>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <FileText size={12} style={{ color:'#2563EB' }}/>
-              <span style={colTitle}>Claim Requests</span>
+        <aside className="hero-card network-card">
+          <div className="network-card-head">
+            <div>
+              <div className="eyebrow">network capacity</div>
+              <div className="capacity-label">Active Liquidity</div>
             </div>
-            <span style={colCount}>{data?.claims.length??0}</span>
+            <Wallet size={19} />
           </div>
-          <div style={colBody}>
-            {!data?.claims.length
-              ? <div style={emptyState}>no claim requests</div>
-              : data.claims.map(c =>
-                  <ClaimRow key={c.id} claim={c} isNew={newIds.current.has(c.id)} />
-                )}
+          <div className="capacity-primary">
+            <strong>{formatUsd(activeLiquidityUsd)}</strong>
+            <small>USD value from TSN CrankerVault token balances</small>
           </div>
-        </div>
-
-        <div style={col}>
-          <div style={colHeader}>
-            <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-              <CheckCircle2 size={12} style={{ color:'#00ff87' }}/>
-              <span style={colTitle}>Proofs of Payment</span>
+          <div className="capacity-grid">
+            <div>
+              <span>Online Crankers</span>
+              <strong>{data?.network?.online_crankers_last_epoch ?? 0}</strong>
             </div>
-            <span style={colCount}>{data?.proofs.length??0}</span>
-          </div>
-          <div style={colBody}>
-            {!data?.proofs.length
-              ? <div style={emptyState}>no proofs submitted</div>
-              : data.proofs.map(p =>
-                  <ProofRow key={p.intent_id} proof={p}
-                    isNew={newIds.current.has(p.intent_id+'_proof')} />
-                )}
-          </div>
-        </div>
-      </div>
-
-      {/* Work queue */}
-      <div style={{ background:'#030303', position:'relative', zIndex:1 }}>
-        <div style={{ padding:'10px 20px', borderBottom:'1px solid #111',
-          display:'flex', alignItems:'center', justifyContent:'space-between',
-          background:'#080808' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <Radio size={12} style={{ color:'#fbbf24' }} />
-            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'0.15em',
-              color:'#444', textTransform:'uppercase' }}>Cranker Work Queue</span>
-            <span style={{ fontSize:11, color:'#555' }}>-- open settlement opportunities</span>
-          </div>
-          <span style={{ color:'#fbbf24', fontSize:11, fontWeight:600 }}>
-            {data?.work.length??0} available
-          </span>
-        </div>
-        {!data?.work.length
-          ? <div style={{ padding:'28px 20px', textAlign:'center', color:'#1e1e1e', fontSize:12 }}>
-              no pending work -- all intents settled or awaiting claims
+            <div>
+              <span>Total Seen</span>
+              <strong>{data?.network?.total_crankers_seen ?? 0}</strong>
             </div>
-          : data.work.map(w =>
-              <WorkRow key={w.intent.id} item={w}
-                isNew={newIds.current.has(w.intent.id+'_work')} />
-            )}
-      </div>
+            <div>
+              <span>Open Work</span>
+              <strong>{data?.work.length ?? 0}</strong>
+            </div>
+          </div>
+        </aside>
+      </section>
 
-      {/* Footer */}
-      <div style={{ padding:'10px 24px', display:'flex', alignItems:'center',
-        justifyContent:'space-between', borderTop:'1px solid #0d0d0d',
-        background:'#000', position:'relative', zIndex:1 }}>
-        <span style={{ color:'#1e1e1e', fontSize:10, letterSpacing:'0.1em' }}>
-          TSN MEMPOOL EXPLORER v1.0 -- polling every 4s
-        </span>
-        {data?.fetched_at && (
-          <span style={{ color:'#1e1e1e', fontSize:10 }}>
-            last update: {new Date(data.fetched_at).toLocaleTimeString()}
-          </span>
+      <section className="ledger-grid">
+        <Panel title="Payment Intents" subtitle="sender-originated TSN requests" count={data?.intents.length ?? 0}>
+          {data?.intents.length ? data.intents.map((intent) => (
+            <DataRow
+              key={intent.id}
+              title={`${formatAmount(intent.amount)} ${tokenAlias(intent.tokenMintAddress)}`}
+              subtitle={`${truncate(intent.id, 18)} | ${timeAgo(intent.postedAt, now)}`}
+              status={intent.status}
+              icon={<Hash size={14} />}
+              isNew={newIds.current.has(intent.id)}
+            />
+          )) : <div className="empty-state">No intents yet</div>}
+        </Panel>
+
+        <Panel title="Claim Requests" subtitle="recipient payout requests" count={data?.claims.length ?? 0}>
+          {data?.claims.length ? data.claims.map((claim) => (
+            <DataRow
+              key={claim.id}
+              title="Private settlement route"
+              subtitle={`${truncate(claim.id, 18)} | ${timeAgo(claim.postedAt, now)}`}
+              status={claim.status}
+              icon={<FileText size={14} />}
+              isNew={newIds.current.has(claim.id)}
+            />
+          )) : <div className="empty-state">No claim requests yet</div>}
+        </Panel>
+
+        <Panel title="Proofs" subtitle="cranker payout attestations" count={data?.proofs.length ?? 0}>
+          {data?.proofs.length ? data.proofs.map((proof) => (
+            <DataRow
+              key={`${proof.intent_id}:${proof.proof_tx}`}
+              title="Private cranker route"
+              subtitle={`${truncate(proof.proof_tx, 18)} | ${timeAgo(proof.timestamp, now)}`}
+              status="executed"
+              icon={<CheckCircle2 size={14} />}
+              isNew={newIds.current.has(`${proof.intent_id}:proof`)}
+            />
+          )) : <div className="empty-state">No proofs submitted yet</div>}
+        </Panel>
+      </section>
+
+      <section className="work-panel">
+        <div className="section-title-row">
+          <div>
+            <div className="section-kicker">operator queue</div>
+            <h2>Cranker Work Queue</h2>
+          </div>
+          <span className="queue-count">{data?.work.length ?? 0} available</span>
+        </div>
+        <div className="work-table">
+          {data?.work.length ? data.work.map((work) => (
+            <div className={`work-row ${newIds.current.has(`${work.intent.id}:work`) ? 'slide-in' : ''}`} key={`${work.intent.id}:${work.claimRequest.id}`}>
+              <div>
+                <span>intent</span>
+                <strong>{truncate(work.intent.id, 18)}</strong>
+              </div>
+              <div>
+                <span>claim</span>
+                <strong>{truncate(work.claimRequest.id, 18)}</strong>
+              </div>
+              <div>
+                <span>amount</span>
+                <strong>{formatAmount(work.intent.amount)} {tokenAlias(work.intent.tokenMintAddress)}</strong>
+              </div>
+              <div>
+                <span>route</span>
+                <strong>private</strong>
+              </div>
+              <StatusBadge status="pending" />
+            </div>
+          )) : <div className="empty-state roomy">No open work. The queue is waiting for claimable payments.</div>}
+        </div>
+      </section>
+
+      <section className="token-flow-grid">
+        <div className="section-title-row">
+          <div>
+            <div className="section-kicker">on-chain capacity</div>
+            <h2>Vaults By Token</h2>
+          </div>
+          <span className="data-note">balances are read from TSN CrankerVault token accounts</span>
+        </div>
+        {(data?.network?.tokens ?? []).length > 0 ? (
+          data!.network!.tokens.slice(0, 6).map((token) => (
+            <article className="token-card" key={token.token_mint}>
+              <div className="token-head">
+                <div>
+                  <div className="token-symbol">{token.token_symbol ?? tokenAlias(token.token_mint)}</div>
+                  <div className="token-mint">{truncate(token.vault_token_account ?? token.token_mint, 18)}</div>
+                </div>
+                <Wallet size={20} />
+              </div>
+              <div className="token-total compact">{formatUsd(token.total_vault_liquidity_usd ?? token.total_vault_liquidity ?? token.vault_liquidity_estimate)}</div>
+              <div className="token-breakdown">
+                <span>Units <strong>{formatAmount(token.total_vault_liquidity_units ?? token.total_vault_liquidity ?? 0)} {token.token_symbol ?? tokenAlias(token.token_mint)}</strong></span>
+                <span>USD price <strong>{token.unit_price_usd != null ? formatUsd(token.unit_price_usd) : '--'}</strong></span>
+                <span>Mempool <strong>{formatAmount(token.total_intent_amount)}</strong></span>
+                <span>Pending <strong>{formatAmount(token.pending_intent_amount)}</strong></span>
+                <span>Executed <strong>{formatAmount(token.executed_intent_amount)}</strong></span>
+                <span>Source <strong>{token.liquidity_source ?? 'program'}</strong></span>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div className="empty-token-card">
+            <Layers3 size={20} />
+            <span>No on-chain CrankerVault accounts discovered yet. Initialize/fund a TSN cranker vault, then refresh.</span>
+          </div>
         )}
-      </div>
+      </section>
 
-      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
-    </div>
+      <footer className="mempool-footer">
+        <span>TSN mempool explorer | polling every 4s</span>
+        <span>{data?.fetched_at ? `last update ${new Date(data.fetched_at).toLocaleTimeString()}` : 'waiting for first fetch'}</span>
+      </footer>
+
+      {error ? (
+        <div className="error-toast">
+          <AlertCircle size={16} />
+          {error}
+        </div>
+      ) : null}
+    </main>
   );
 }
