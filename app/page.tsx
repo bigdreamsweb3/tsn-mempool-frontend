@@ -107,6 +107,7 @@ type MempoolData = {
 
 const STATUS_COLORS: Record<string, string> = {
   pending: '#fbbf24',
+  escrowed: '#58f2b1',
   claimed: '#2563eb',
   processing: '#22d3ee',
   executed: '#00ff87',
@@ -174,11 +175,12 @@ function epochProgress(epoch: Epoch | null, now: number | null) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] ?? '#6b7280';
+  const displayStatus = status === 'onchain' ? 'escrowed' : status;
+  const color = STATUS_COLORS[displayStatus] ?? '#6b7280';
   return (
     <span className="status-badge" style={{ ['--status-color' as string]: color }}>
       <span className="status-dot" />
-      {status}
+      {displayStatus}
     </span>
   );
 }
