@@ -75,8 +75,46 @@ function redactProof(proof: any) {
   };
 }
 
+function redactTinOperation(operation: any) {
+  if (!operation || typeof operation !== 'object') return operation;
+  return {
+    intentId: opaqueId(operation.intentId),
+    intentType: operation.intentType,
+    tin: operation.tin,
+    ownerPubkey: opaqueId(operation.ownerPubkey),
+    ownerIntentHash: operation.ownerIntentHash,
+    nonce: operation.nonce,
+    expiry: operation.expiry,
+    createdAt: operation.createdAt,
+    updatedAt: operation.updatedAt,
+    status: operation.status,
+    verifierCranker: opaqueId(operation.verifierCranker),
+    submitterCranker: opaqueId(operation.submitterCranker),
+    feeMetadata: operation.feeMetadata
+      ? {
+          feeMint: operation.feeMetadata.feeMint,
+          grossAmount: operation.feeMetadata.grossAmount,
+          verifierAmount: operation.feeMetadata.verifierAmount,
+          submitterAmount: operation.feeMetadata.submitterAmount,
+          treasuryAmount: operation.feeMetadata.treasuryAmount,
+          bonusPoolAmount: operation.feeMetadata.bonusPoolAmount,
+          feeCommitmentHash: operation.feeMetadata.feeCommitmentHash,
+          status: operation.feeMetadata.status,
+        }
+      : null,
+    failureReason: operation.failureReason,
+    onchainSignatures: Array.isArray(operation.onchainSignatures)
+      ? operation.onchainSignatures.map((signature: string) => opaqueId(signature))
+      : [],
+    displayName: operation.displayName,
+    privacyLevel: operation.privacyLevel,
+    encryptedMetadataHash: operation.encryptedMetadataHash,
+    pruConfigurationHash: operation.pruConfigurationHash,
+  };
+}
+
 export async function GET() {
-  const [epoch, intents, claims, proofs, work, metrics, network] = await Promise.all([
+  const [epoch, intents, claims, proofs, work, metrics, network, tinOperations] = await Promise.all([
     fetchGET('/epoch/status'),
     fetchGET('/intents'),
     fetchGET('/claim-requests'),
@@ -84,6 +122,7 @@ export async function GET() {
     fetchGET('/work'),
     fetchGET('/metrics'),
     fetchGET('/network/overview'),
+    fetchGET('/tin-operations'),
   ]);
 
   return NextResponse.json({
@@ -94,6 +133,7 @@ export async function GET() {
     work:       Array.isArray(work)    ? work.map(redactWorkItem) : [],
     metrics:    metrics ?? null,
     network:    network ?? null,
+    tinOperations: Array.isArray(tinOperations) ? tinOperations.map(redactTinOperation) : [],
     fetched_at: new Date().toISOString(),
   }, {
     headers: {

@@ -48,6 +48,37 @@ type Proof = {
 
 type WorkItem = { intent: Intent; claimRequest: Claim };
 
+type TinOperation = {
+  intentId: string;
+  intentType: 'tin_creation' | 'tin_update';
+  tin: string;
+  ownerPubkey: string | null;
+  ownerIntentHash: string;
+  nonce: string;
+  expiry: number;
+  createdAt: string;
+  updatedAt: string;
+  status: string;
+  verifierCranker: string | null;
+  submitterCranker: string | null;
+  feeMetadata: {
+    feeMint: string;
+    grossAmount: string;
+    verifierAmount: string;
+    submitterAmount: string;
+    treasuryAmount: string;
+    bonusPoolAmount: string;
+    feeCommitmentHash: string;
+    status: string;
+  } | null;
+  failureReason?: string | null;
+  onchainSignatures: string[];
+  displayName?: string | null;
+  privacyLevel: number;
+  encryptedMetadataHash: string;
+  pruConfigurationHash: string;
+};
+
 type Epoch = {
   epoch_number: number;
   epoch_started_at: string;
@@ -63,6 +94,7 @@ type MempoolData = {
   claims: Claim[];
   proofs: Proof[];
   work: WorkItem[];
+  tinOperations: TinOperation[];
   fetched_at: string;
   metrics: {
     intent_to_claim: {
@@ -117,6 +149,15 @@ const STATUS_COLORS: Record<string, string> = {
   canceled: '#6b7280',
   failed: '#ef4444',
   reverted: '#ef4444',
+  pending_verification: '#fbbf24',
+  verifier_assigned: '#fbbf24',
+  verified: '#22d3ee',
+  fee_pending: '#a78bfa',
+  fee_committed: '#58f2b1',
+  submitter_assigned: '#58f2b1',
+  submitted_onchain: '#2563eb',
+  finalized: '#00ff87',
+  rejected: '#ef4444',
 };
 
 const DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
@@ -142,6 +183,13 @@ function formatAmount(value: number) {
 function formatUsd(value: number) {
   if (!Number.isFinite(value)) return '$0.00';
   return value.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value >= 100 ? 0 : 2, minimumFractionDigits: 2 });
+}
+
+function formatUsdcBaseUnits(value?: string | null) {
+  if (!value) return '0.000000 USDC';
+  const units = Number(value);
+  if (!Number.isFinite(units)) return '0.000000 USDC';
+  return `${(units / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 6, minimumFractionDigits: 2 })} USDC`;
 }
 
 function formatSecondsFromMs(ms: number) {
@@ -245,6 +293,7 @@ export default function MempoolExplorer() {
         ...json.claims.map((claim) => claim.id),
         ...json.proofs.map((proof) => `${proof.intent_id}:proof`),
         ...json.work.map((work) => `${work.intent.id}:work`),
+        ...(json.tinOperations ?? []).map((operation) => `${operation.intentId}:tin`),
       ];
       newIds.current = new Set(allIds.filter((id) => !prevIds.current.has(id)));
       prevIds.current = new Set(allIds);
@@ -429,6 +478,47 @@ export default function MempoolExplorer() {
             />
           )) : <div className="empty-state">No proofs submitted yet</div>}
         </Panel>
+      </section>
+
+      <section className="work-panel">
+        <div className="section-title-row">
+          <div>
+            <div className="section-kicker">identity operations</div>
+            <h2>TINS Cranker Queue</h2>
+          </div>
+          <span className="queue-count">{data?.tinOperations.length ?? 0} operations</span>
+        </div>
+        <div className="work-table">
+          {data?.tinOperations.length ? data.tinOperations.map((operation) => (
+            <div className={`work-row tins-work-row ${newIds.current.has(`${operation.intentId}:tin`) ? 'slide-in' : ''}`} key={operation.intentId}>
+              <div>
+                <span>operation</span>
+                <strong>{operation.intentType === 'tin_creation' ? 'TIN creation' : 'TIN update'}</strong>
+              </div>
+              <div>
+                <span>TIN</span>
+                <strong>{operation.tin}</strong>
+              </div>
+              <div>
+                <span>owner</span>
+                <strong>{truncate(operation.ownerPubkey ?? '', 18)}</strong>
+              </div>
+              <div>
+                <span>privacy / fee</span>
+                <strong>L{operation.privacyLevel} · {formatUsdcBaseUnits(operation.feeMetadata?.grossAmount)}</strong>
+              </div>
+              <div>
+                <span>crankers</span>
+                <strong>A {truncate(operation.verifierCranker ?? '', 10)} / B {truncate(operation.submitterCranker ?? '', 10)}</strong>
+              </div>
+              <div>
+                <span>PRU commitment</span>
+                <strong>{truncate(operation.pruConfigurationHash, 18)}</strong>
+              </div>
+              <StatusBadge status={operation.status} />
+            </div>
+          )) : <div className="empty-state roomy">No TINS operations yet. TIN creation and updates will appear here after owner-signed intents enter TSN.</div>}
+        </div>
       </section>
 
       <section className="work-panel">

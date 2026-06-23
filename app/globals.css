@@ -893,6 +893,9 @@ h1 {
   border-bottom: 1px solid #111;
   background: #050505;
 }
+.tins-work-row {
+  grid-template-columns: 1fr 0.8fr 1fr 1fr 1fr 1fr auto;
+}
 .work-row:last-child {
   border-bottom: 0;
 }
