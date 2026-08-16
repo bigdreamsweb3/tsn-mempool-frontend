@@ -1,143 +1,74 @@
-import { createHash } from 'node:crypto';
-import { NextResponse } from 'next/server';
+import { createHash } from "node:crypto";
+import { NextResponse } from "next/server";
 
-// ── Point this to your self-hosted backend ───────────────────────────────────
-// Set MEMPOOL_API_URL in .env.local, e.g.:
-//   MEMPOOL_API_URL=http://localhost:8000
-
-const BASE = (process.env.MEMPOOL_API_URL || 'http://localhost:8000').replace(/\/$/, '');
-const API_KEY = process.env.MEMPOOL_API_KEY;
+const BASES = [
+  process.env.TSN_RECEIVER_URL || process.env.MEMPOOL_API_URL,
+  process.env.TSN_RECEIVER_FALLBACK_URL || "https://tsn-receiver-kappa.vercel.app",
+].filter(Boolean).map((value) => value!.replace(/\/$/, ""));
 
 function opaqueId(value: unknown) {
-  if (typeof value !== 'string' || !value) return null;
-  return createHash('sha256').update(`tsn-public:${value}`).digest('hex').slice(0, 16);
+  if (typeof value !== "string" || !value) return null;
+  return createHash("sha256").update(`tsn-public:${value}`).digest("hex").slice(0, 16);
 }
 
-function redactIntent(intent: any) {
-  if (!intent || typeof intent !== 'object') return intent;
-  return {
-    ...intent,
-    id: opaqueId(intent.id),
-    paymentId: opaqueId(intent.paymentId),
-    recipientHash: null,
-    assignedCrankerPubkey: null,
-    escrowTxSig: null,
-    claimTxSig: null,
-    proofTxSig: null,
-  };
-}
-
-async function fetchGET(path: string) {
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      method: 'GET',
-      next: { revalidate: 3 },
-      headers: API_KEY ? { 'x-api-key': API_KEY } : undefined,
-    });
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
+async function get(path: string) {
+  for (const base of Array.from(new Set(BASES))) {
+    try {
+      const response = await fetch(`${base}${path}`, { next: { revalidate: 3 } });
+      if (response.ok) return response.json();
+      if (response.status < 500) return null;
+    } catch {
+      // Try the deployed Receiver when the local service is stopped.
+    }
   }
+  return null;
 }
 
-function redactClaim(claim: any) {
-  if (!claim || typeof claim !== 'object') return claim;
+function publicWork(item: any) {
   return {
-    ...claim,
-    id: opaqueId(claim.id),
-    paymentId: opaqueId(claim.paymentId),
-    intentId: opaqueId(claim.intentId),
-    recipientHash: null,
-    assignedCrankerPubkey: null,
-    destinationWallet: null,
-    destinationRoute: 'private',
-  };
-}
-
-function redactWorkItem(work: any) {
-  if (!work || typeof work !== 'object') return work;
-  return {
-    ...work,
-    intent: redactIntent(work.intent),
-    claimRequest: redactClaim(work.claimRequest),
-  };
-}
-
-function redactProof(proof: any) {
-  if (!proof || typeof proof !== 'object') return proof;
-  return {
-    ...proof,
-    intent_id: opaqueId(proof.intent_id),
-    proof_tx: null,
-    cranker_pubkey: null,
-    crankerRoute: 'private',
-  };
-}
-
-function redactTinOperation(operation: any) {
-  if (!operation || typeof operation !== 'object') return operation;
-  return {
-    intentId: opaqueId(operation.intentId),
-    intentType: operation.intentType,
-    tin: operation.tin,
-    ownerPubkey: opaqueId(operation.ownerPubkey),
-    ownerIntentHash: operation.ownerIntentHash,
-    nonce: operation.nonce,
-    expiry: operation.expiry,
-    createdAt: operation.createdAt,
-    updatedAt: operation.updatedAt,
-    status: operation.status,
-    verifierCranker: opaqueId(operation.verifierCranker),
-    submitterCranker: opaqueId(operation.submitterCranker),
-    feeMetadata: operation.feeMetadata
+    id: opaqueId(item?.id),
+    kind: item?.kind ?? "UNKNOWN",
+    status: item?.status ?? "UNKNOWN",
+    stateVersion: item?.stateVersion ?? 0,
+    payloadCommitment: item?.payloadCommitment ?? null,
+    receivedAt: item?.receivedAt ?? null,
+    updatedAt: item?.updatedAt ?? null,
+    verification: item?.verification ?? null,
+    result: item?.result
       ? {
-          feeMint: operation.feeMetadata.feeMint,
-          grossAmount: operation.feeMetadata.grossAmount,
-          verifierAmount: operation.feeMetadata.verifierAmount,
-          submitterAmount: operation.feeMetadata.submitterAmount,
-          treasuryAmount: operation.feeMetadata.treasuryAmount,
-          bonusPoolAmount: operation.feeMetadata.bonusPoolAmount,
-          feeCommitmentHash: operation.feeMetadata.feeCommitmentHash,
-          status: operation.feeMetadata.status,
+          signature: opaqueId(item.result.signature),
+          stage: item.result.stage ?? null,
+          reason: item.result.reason ?? null,
         }
       : null,
-    failureReason: operation.failureReason,
-    onchainSignatures: Array.isArray(operation.onchainSignatures)
-      ? operation.onchainSignatures.map((signature: string) => opaqueId(signature))
-      : [],
-    displayName: operation.displayName,
-    privacyLevel: operation.privacyLevel,
-    encryptedMetadataHash: operation.encryptedMetadataHash,
-    pruConfigurationHash: operation.pruConfigurationHash,
   };
 }
 
 export async function GET() {
-  const [epoch, intents, claims, proofs, work, metrics, network, tinOperations] = await Promise.all([
-    fetchGET('/epoch/status'),
-    fetchGET('/intents'),
-    fetchGET('/claim-requests'),
-    fetchGET('/proofs'),
-    fetchGET('/work'),
-    fetchGET('/metrics'),
-    fetchGET('/network/overview'),
-    fetchGET('/tin-operations'),
+  const [receiverWork, network] = await Promise.all([
+    get("/api/work"),
+    get("/network/overview"),
   ]);
-
+  const work = Array.isArray(receiverWork) ? receiverWork.map(publicWork) : [];
+  const intents = work.filter((item) => item.kind === "PAYMENT_INTENT");
+  const claims = work.filter((item) => item.kind === "CLAIM");
+  const tinOperations = work.filter((item) => item.kind === "TIN_OPERATION");
   return NextResponse.json({
-    epoch:      epoch  ?? null,
-    intents:    Array.isArray(intents) ? intents.map(redactIntent) : [],
-    claims:     Array.isArray(claims)  ? claims.map(redactClaim) : [],
-    proofs:     Array.isArray(proofs)  ? proofs.map(redactProof) : [],
-    work:       Array.isArray(work)    ? work.map(redactWorkItem) : [],
-    metrics:    metrics ?? null,
-    network:    network ?? null,
-    tinOperations: Array.isArray(tinOperations) ? tinOperations.map(redactTinOperation) : [],
+    epoch: null,
+    intents,
+    claims,
+    proofs: [],
+    work,
+    metrics: {
+      total: work.length,
+      received: work.filter((item) => item.status === "RECEIVED").length,
+      verified: work.filter((item) => item.status === "VERIFIED").length,
+      confirmed: work.filter((item) => item.status === "CONFIRMED").length,
+    },
+    network,
+    tinOperations,
     fetched_at: new Date().toISOString(),
   }, {
-    headers: {
-      'Cache-Control': 'public, max-age=2, stale-while-revalidate=5',
-    },
+    headers: { "cache-control": "public, max-age=2, stale-while-revalidate=5" },
   });
 }

@@ -51,7 +51,7 @@ type WorkItem = { intent: Intent; claimRequest: Claim };
 type TinOperation = {
   intentId: string;
   intentType: 'tin_creation' | 'tin_update';
-  tin: string;
+  tinHash: string;
   ownerPubkey: string | null;
   ownerIntentHash: string;
   nonce: string;
@@ -66,15 +66,14 @@ type TinOperation = {
     grossAmount: string;
     verifierAmount: string;
     submitterAmount: string;
-    treasuryAmount: string;
-    bonusPoolAmount: string;
+    teamAmount: string;
+    reservePoolAmount: string;
     feeCommitmentHash: string;
     status: string;
   } | null;
   failureReason?: string | null;
   onchainSignatures: string[];
   displayName?: string | null;
-  privacyLevel: number;
   encryptedMetadataHash: string;
   pruConfigurationHash: string;
 };
@@ -484,7 +483,7 @@ export default function MempoolExplorer() {
         <div className="section-title-row">
           <div>
             <div className="section-kicker">identity operations</div>
-            <h2>TINS Cranker Queue</h2>
+            <h2>TIP Cranker Queue</h2>
           </div>
           <span className="queue-count">{data?.tinOperations.length ?? 0} operations</span>
         </div>
@@ -496,16 +495,16 @@ export default function MempoolExplorer() {
                 <strong>{operation.intentType === 'tin_creation' ? 'TIN creation' : 'TIN update'}</strong>
               </div>
               <div>
-                <span>TIN</span>
-                <strong>{operation.tin}</strong>
+                <span>TIN route</span>
+                <strong>{truncate(operation.tinHash, 18)}</strong>
               </div>
               <div>
                 <span>owner</span>
                 <strong>{truncate(operation.ownerPubkey ?? '', 18)}</strong>
               </div>
               <div>
-                <span>privacy / fee</span>
-                <strong>L{operation.privacyLevel} · {formatUsdcBaseUnits(operation.feeMetadata?.grossAmount)}</strong>
+                <span>operation fee</span>
+                <strong>{formatUsdcBaseUnits(operation.feeMetadata?.grossAmount)}</strong>
               </div>
               <div>
                 <span>crankers</span>
@@ -517,7 +516,7 @@ export default function MempoolExplorer() {
               </div>
               <StatusBadge status={operation.status} />
             </div>
-          )) : <div className="empty-state roomy">No TINS operations yet. TIN creation and updates will appear here after owner-signed intents enter TSN.</div>}
+          )) : <div className="empty-state roomy">No TIP operations yet. TIN creation and updates will appear here after owner-signed intents enter TSN.</div>}
         </div>
       </section>
 
